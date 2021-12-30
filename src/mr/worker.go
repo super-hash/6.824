@@ -42,7 +42,6 @@ func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 	// Your worker implementation here.
 	for {
-		
 		worker := MyWorker{mapf: mapf, reducef: reducef}
 		worker.CallAskReply()
 		switch worker.Task.TaskState {

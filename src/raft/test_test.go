@@ -27,6 +27,7 @@ func TestInitialElection2A(t *testing.T) {
 	cfg.begin("Test (2A): initial election")
 
 	// is a leader elected?
+	time.Sleep(time.Second*3)
 	cfg.checkOneLeader()
 
 	// sleep a bit to avoid racing with followers learning of the
@@ -63,13 +64,10 @@ func TestReElection2A(t *testing.T) {
 	cfg.disconnect(leader1)
 	cfg.checkOneLeader()
 
-	// if the old leader rejoins, that shouldn't
-	// disturb the new leader.
+	// if the old leader rejoins, that shouldn't disturb the new leader.
 	cfg.connect(leader1)
 	leader2 := cfg.checkOneLeader()
-
-	// if there's no quorum, no leader should
-	// be elected.
+	// if there's no quorum, no leader should be elected.
 	cfg.disconnect(leader2)
 	cfg.disconnect((leader2 + 1) % servers)
 	time.Sleep(2 * RaftElectionTimeout)
