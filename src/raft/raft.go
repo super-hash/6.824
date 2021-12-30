@@ -110,16 +110,8 @@ func StableHeartBeatTimer() time.Duration {
 func (rf *Raft) GetState() (int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	var term int
-	var isleader bool
 	// Your code here (2A).
-	if rf.state == Leader {
-		isleader = true
-	} else {
-		isleader = false
-	}
-	term = rf.currentTerm
-	return term, isleader
+	return rf.currentTerm, rf.state==Leader
 }
 
 //
