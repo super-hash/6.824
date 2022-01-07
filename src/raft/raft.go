@@ -61,7 +61,7 @@ const (
 
 type Entry struct {
 	Term int
-	//Command string
+	Command interface{}
 }
 
 //
@@ -101,7 +101,6 @@ func RandomElectionTime() time.Duration {
 
 //return 120ms
 func StableHeartBeatTimer() time.Duration {
-
 	return time.Duration(time.Millisecond * 120)
 }
 
@@ -206,24 +205,27 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	return ok
 }
 func (rf *Raft) CallAppendEntries(server int, isHeartBeat bool) {
-	
+	rf.mu.Lock()
 	args := AppendEntriesArgs{
 		Term:        rf.currentTerm,
 		LeaderId:    rf.me,
 		IsHeartBeat: isHeartBeat,
 	}
+	rf.mu.Unlock()
 	reply := AppendEntriesReply{}
 	if isHeartBeat {
 		//DPrintf("%d leader send  HeartBeat  to %d in %d term", rf.me, server, rf.currentTerm)
 		rf.sendAppendEntries(server, &args, &reply)
 		if !reply.Success {
+			rf.mu.Lock()
 			rf.currentTerm = reply.Term
 			rf.state = Follower
 			rf.votedFor = -1
 			rf.electionTimer.Reset(RandomElectionTime())
+			rf.mu.Unlock()
 		}
 	} else {
-		//DPrintf("%d leader send  entries to %d in %d term", rf.me, server, rf.currentTerm)
+		DPrintf("%d leader send  entries to %d in %d term", rf.me, server, rf.currentTerm)
 	}
 }
 func (rf *Raft) BroadcastHeartBeat(isHeartBeat bool) {
@@ -259,21 +261,22 @@ type RequestVoteReply struct {
 }
 
 // return true: rf 比参数server更新
-func (rf *Raft) isLogUpToDate(lastLogIndex, lastLogTerm int) bool {
-	len := len(rf.logs)
-	if len == 0 {
-		return false
-	}
-	if rf.logs[len-1].Term < lastLogTerm {
-		return false
-	}
-	if rf.logs[len-1].Term == lastLogTerm && len-1 < lastLogIndex {
-		return false
-	}
-	return true
-}
+// func (rf *Raft) isLogUpToDate(lastLogIndex, lastLogTerm int) bool {
+// 	len := len(rf.logs)
+// 	if len == 0 {
+// 		return false
+// 	}
+// 	if rf.logs[len-1].Term < lastLogTerm {
+// 		return false
+// 	}
+// 	if rf.logs[len-1].Term == lastLogTerm && len-1 < lastLogIndex {
+// 		return false
+// 	}
+// 	return true
+// }
 func (rf *Raft) AttemptElection() {
 	//DPrintf("%d  %v Attempt  election in %d term\n", rf.me,rf.state ,rf.currentTerm)
+
 	args := RequestVoteArgs{
 		Term:        rf.currentTerm,
 		CandidateId: rf.me,
@@ -306,34 +309,12 @@ func (rf *Raft) AttemptElection() {
 						rf.currentTerm = reply.Term
 						rf.votedFor = -1
 						//DPrintf("%d %v to Follower",rf.me,rf.state)
-
 					}
 				}
 			}
 		}(server)
 	}
 }
-// func (rf *Raft) CallRequestVote(server int) bool {
-// 	rf.mu.Lock()
-// 	defer rf.mu.Unlock()
-// 	args := RequestVoteArgs{
-// 		Term:        rf.currentTerm,
-// 		CandidateId: rf.me,
-// 	}
-// 	reply := RequestVoteReply{}
-// 	if rf.sendRequestVote(server, &args, &reply) {
-// 		if reply.Term > rf.currentTerm {
-// 			DPrintf("%d %v to Follower",rf.me,rf.state)
-// 			rf.currentTerm = reply.Term
-// 			rf.state = Follower
-// 			rf.votedFor = -1
-// 		}
-// 		DPrintf("[%d] finish sending request vote  %d  %v in %d term", rf.me, server, reply.VoteGranted, rf.currentTerm)
-// 		return reply.VoteGranted
-// 	}
-// 	DPrintf("%d %v  can`t sendRequestVote to  %d in %d term",rf.me,rf.state,server, rf.currentTerm)
-// 	return false
-// }
 
 //
 // example RequestVote RPC handler.
@@ -440,7 +421,7 @@ func (rf *Raft) killed() bool {
 // The ticker go routine starts a new election if this peer hasn't received
 // heartsbeats recently.
 func (rf *Raft) ticker() {
-	for rf.killed() == false {
+	for !rf.killed() {
 		select {
 		case <-rf.electionTimer.C:
 			rf.mu.Lock()
