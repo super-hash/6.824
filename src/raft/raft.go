@@ -387,8 +387,7 @@ func (rf *Raft) CallAppendEntries(peerId int) {
 			if reply.Success { // 同步日志成功
 				rf.nextIndex[peerId] = args.PrevLogIndex + len(args.Entries) + 1
 				rf.matchIndex[peerId] = rf.nextIndex[peerId] - 1
-				rf.commitIndex = args.PrevLogIndex + len(args.Entries)
-				//rf.updateCommitIndex() // 更新commitIndex
+				rf.updateCommitIndex() // 更新commitIndex
 
 			} else {
 				// 回退优化，参考：https://thesquareplanet.com/blog/students-guide-to-raft/#an-aside-on-optimizations
@@ -676,7 +675,6 @@ func (rf *Raft) ticker() {
 			if rf.state == Leader {
 				DPrintf("%d %v Broading heartBeat to all server in %d term \n", rf.me, rf.state, rf.currentTerm)
 				rf.BroadcastHeartBeat()
-				//rf.electionTimer.Reset(RandomElectionTime())
 				rf.heartBeatTimer.Reset(StableHeartBeatTimer())
 			}
 			rf.mu.Unlock()
