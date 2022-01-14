@@ -271,7 +271,6 @@ func TestConcurrentStarts2B(t *testing.T) {
 	defer cfg.cleanup()
 
 	cfg.begin("Test (2B): concurrent Start()s")
-
 	var success bool
 loop:
 	for try := 0; try < 5; try++ {
