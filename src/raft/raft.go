@@ -196,25 +196,7 @@ type AppendEntriesReply struct {
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	// rf.mu.Lock()
-	// defer rf.mu.Unlock()
-	// reply.ConflictTerm = -1
-	// reply.ConflictIndex = -1
-	// reply.Success = false
-	// reply.Term = rf.currentTerm
-	// if rf.currentTerm > args.Term {
-	// 	return
-	// }
-	// if rf.currentTerm < args.Term {
-	// 	//DPrintf("[%d]to follow because %d < %d",rf.me,rf.currentTerm,args.Term)
-	// 	rf.currentTerm = args.Term
-	// 	//DPrintf("[%d] term: %d",rf.me,rf.currentTerm)
-	// 	rf.votedFor = args.LeaderId
-	// 	rf.state = Follower
-	// }
-	// rf.electionTimer.Reset(RandomElectionTime())
-	// rf.LeaderId = args.LeaderId
-	// reply.Success = true
+
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
@@ -224,10 +206,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	reply.Success = false
 	reply.ConflictIndex = -1
 	reply.ConflictTerm = -1
-	defer func() {
-		//DPrintf("RaftNode[%d] Return AppendEntries, LeaderId[%d] Term[%d] CurrentTerm[%d] role=[%s] logIndex[%d] prevLogIndex[%d] prevLogTerm[%d] Success[%v] commitIndex[%d] log[%v] ConflictIndex[%d]",
-		//rf.me, rf.LeaderId, args.Term, rf.currentTerm, rf.state, rf.lastIndex(), args.PrevLogIndex, args.PrevLogTerm, reply.Success, rf.commitIndex, len(rf.log), reply.ConflictIndex)
-	}()
+	// defer func() {
+	// 	//DPrintf("RaftNode[%d] Return AppendEntries, LeaderId[%d] Term[%d] CurrentTerm[%d] role=[%s] logIndex[%d] prevLogIndex[%d] prevLogTerm[%d] Success[%v] commitIndex[%d] log[%v] ConflictIndex[%d]",
+	// 	//rf.me, rf.LeaderId, args.Term, rf.currentTerm, rf.state, rf.lastIndex(), args.PrevLogIndex, args.PrevLogTerm, reply.Success, rf.commitIndex, len(rf.log), reply.ConflictIndex)
+	// }()
 
 	if args.Term < rf.currentTerm {
 		return
@@ -238,19 +220,17 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.state = Follower
 		rf.votedFor = -1
 		// 继续向下走``
-		rf.electionTimer.Reset(RandomElectionTime())
 	}
+
 	// 认识新的leader
 	rf.LeaderId = args.LeaderId
 
-	// 如果prevLogIndex在快照内，且不是快照最后一个log，那么只能从index=1开始同步了
-	// prevLogIndex在快照之后，那么进一步判定
 	if args.PrevLogIndex > rf.lastIndex() { // prevLogIndex位置没有日志的case
 		reply.ConflictIndex = len(rf.log)
 		return
 	}
 	// prevLogIndex位置有日志，那么判断term必须相同，否则false
-	if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+	if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm { //2
 		reply.ConflictTerm = rf.log[args.PrevLogIndex].Term
 		for index := 1; index <= args.PrevLogIndex; index++ { // 找到冲突term的首次出现位置，最差就是PrevLogIndex
 			if rf.log[index].Term == reply.ConflictTerm {
@@ -260,35 +240,40 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 		return
 	}
-	// 否则继续走后续的日志覆盖逻辑
-	// 保存日志
+
+	//日志复制
 	for i, logEntry := range args.Entries {
 		index := args.PrevLogIndex + 1 + i
 		logPos := index
-		if index > rf.lastIndex() { // 超出现有日志长度，继续追加
+		if index > rf.lastIndex() {
 			rf.log = append(rf.log, logEntry)
-		} else { // 重叠部分
+		} else {
 			if rf.log[logPos].Term != logEntry.Term {
-				rf.log = rf.log[:logPos]          // 删除当前以及后续所有log
-				rf.log = append(rf.log, logEntry) // 把新log加入进来
-			} // term一样啥也不用做，继续向后比对Log
+				rf.log = rf.log[:logPos]          //3
+				rf.log = append(rf.log, logEntry) //4
+			}
 		}
 	}
 	// 更新提交下标
-	if args.LeaderCommit > rf.commitIndex {
-		rf.commitIndex = args.LeaderCommit
-		if rf.lastIndex() < rf.commitIndex {
-			rf.commitIndex = rf.lastIndex()
-		}
+	if args.LeaderCommit > rf.commitIndex {//5
+		rf.commitIndex = Min(args.LeaderCommit, rf.lastIndex())
 	}
+	rf.electionTimer.Reset(RandomElectionTime())
 	reply.Success = true
+}
+func Min(a,b int) int{
+	if a<b{
+		return a
+	}else{
+		return b
+	}
 }
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	return ok
 }
 func (rf *Raft) updateCommitIndex() {
-	
+
 	sortedMatchIndex := make([]int, 0)
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
@@ -389,7 +374,7 @@ func (rf *Raft) CallAppendEntries(peerId int) {
 						}
 					}
 					if conflictTermIndex != -1 { // leader log出现了这个term，那么从这里prevLogIndex之前的最晚出现位置尝试同步
-						rf.nextIndex[peerId] = conflictTermIndex + 1
+						rf.nextIndex[peerId] = conflictTermIndex 
 					} else {
 						rf.nextIndex[peerId] = reply.ConflictIndex // 用follower首次出现term的index作为同步开始
 					}
