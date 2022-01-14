@@ -294,30 +294,7 @@ func (rf *Raft) updateCommitIndex() {
 	//DPrintf("RaftNode[%d] updateCommitIndex, commitIndex[%d] matchIndex[%v]", rf.me, rf.commitIndex, sortedMatchIndex)
 }
 func (rf *Raft) CallAppendEntries(peerId int) {
-
-	// rf.mu.Lock()
-	// args := AppendEntriesArgs{
-	// 	Term:         rf.currentTerm,
-	// 	LeaderId:     rf.me,
-	// 	LeaderCommit: rf.commitIndex,
-	// 	PrevLogIndex: rf.nextIndex[server] - 1,
-	// }
-	// args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
-	// //DPrintf("%d leader send  HeartBeat  to %d in %d term", rf.me, server, rf.currentTerm)
-	// reply := AppendEntriesReply{}
-	// rf.mu.Unlock()
-	// go func() {
-	// }()
-	// rf.sendAppendEntries(server, &args, &reply)
-	// if !reply.Success {
-	// 	rf.mu.Lock()
-	// 	//DPrintf("[%d] unsuccess term me:%d  reply:%d",rf.me,rf.currentTerm,reply.Term)
-	// 	rf.currentTerm = reply.Term
-	// 	rf.state = Follower
-	// 	rf.votedFor = -1
-	// 	rf.electionTimer.Reset(RandomElectionTime())
-	// 	rf.mu.Unlock()
-	// }
+	
 	rf.mu.Lock()
 	args := AppendEntriesArgs{}
 	args.Term = rf.currentTerm
@@ -351,7 +328,7 @@ func (rf *Raft) CallAppendEntries(peerId int) {
 				rf.LeaderId = -1
 				rf.currentTerm = reply.Term
 				rf.votedFor = -1
-				rf.electionTimer.Reset(RandomElectionTime())
+				//rf.electionTimer.Reset(RandomElectionTime())
 				return
 			}
 
