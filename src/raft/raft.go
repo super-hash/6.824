@@ -293,7 +293,6 @@ func (rf *Raft) updateCommitIndex() {
 	// DPrintf("RaftNode[%d] updateCommitIndex, commitIndex[%d] matchIndex[%v]", rf.me, rf.commitIndex, rf.matchIndex)
 }
 func (rf *Raft) CallAppendEntries(peerId int) {
-
 	rf.mu.Lock()
 	args := AppendEntriesArgs{}
 	args.Term = rf.currentTerm
@@ -336,11 +335,8 @@ func (rf *Raft) CallAppendEntries(peerId int) {
 				rf.matchIndex[peerId] = rf.nextIndex[peerId] - 1
 				// DPrintf("peerId : %d   rf.matchIndex:{%v}",peerId,rf.matchIndex)
 				rf.updateCommitIndex()
-
 			} else {
-				// 回退优化，参考：https://thesquareplanet.com/blog/students-guide-to-raft/#an-aside-on-optimizations
 				// nextIndexBefore := rf.nextIndex[peerId] // 仅为打印log
-
 				if reply.ConflictTerm != -1 { // follower的prevLogIndex位置term冲突了
 					// 我们找leader log中conflictTerm最后出现位置，如果找到了就用它作为nextIndex，否则用follower的conflictIndex
 					conflictTermIndex := -1
@@ -358,7 +354,8 @@ func (rf *Raft) CallAppendEntries(peerId int) {
 				} else {
 					// follower没有发现prevLogIndex term冲突, 可能是被snapshot了或者日志长度不够
 					// 这时候我们将返回的conflictIndex设置为nextIndex即可
-					rf.nextIndex[peerId] = reply.ConflictIndex
+					rf.nextIndex[peerId] = 1
+					DPrintf("!!!!!!!!!!!!!!================  ------111111111")
 				}
 				// DPrintf("RaftNode[%d] back-off nextIndex, peer[%d] nextIndexBefore[%d] nextIndex[%d]", rf.me, peerId, nextIndexBefore, rf.nextIndex[peerId])
 			}
