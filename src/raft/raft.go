@@ -229,7 +229,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 	baseIndex := 0
-
+	DPrintf("[%d] PrevLogIndex: %d",rf.me,args.PrevLogIndex)
 	if args.PrevLogIndex >= baseIndex && args.PrevLogTerm != rf.log[args.PrevLogIndex-baseIndex].Term {
 		// if entry log[prevLogIndex] conflicts with new one, there may be conflict entries before.
 		// bypass all entries during the problematic term to speed up.
@@ -240,14 +240,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				break
 			}
 		}
-	} else if args.PrevLogIndex >= baseIndex-1 {
-		// otherwise log up to prevLogIndex are safe.
-		// merge lcoal log and entries from leader, and apply log if commitIndex changes.
-		rf.log = rf.log[:args.PrevLogIndex-baseIndex+1]
+	} else if args.PrevLogIndex >= baseIndex {
+		//匹配成功则只保留log【0--PrevLogIndex],追加args.Entries
+		rf.log = rf.log[:args.PrevLogIndex-baseIndex+1] 
 		rf.log = append(rf.log, args.Entries...)
 
 		reply.Success = true
-		reply.NextTryIndex = args.PrevLogIndex + len(args.Entries)
+		reply.NextTryIndex = args.PrevLogIndex + len(args.Entries) 
 
 		if rf.commitIndex < args.LeaderCommit {
 			rf.commitIndex = Min(args.LeaderCommit, rf.lastIndex())
@@ -266,8 +265,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	return ok
 }
 func (rf *Raft) updateCommitIndex() {
-	baseIndex := 0
-	for N := rf.lastIndex(); N > rf.commitIndex && rf.log[N-baseIndex].Term == rf.currentTerm; N-- {
+	for N := rf.lastIndex(); N > rf.commitIndex && rf.log[N].Term == rf.currentTerm; N-- {
 		// find if there exists an N to update commitIndex
 		count := 1
 		for i := range rf.peers {
