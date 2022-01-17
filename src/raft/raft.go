@@ -21,7 +21,7 @@ import (
 	//	"bytes"
 
 	"math/rand"
-	"sort"
+
 	"sync"
 	"sync/atomic"
 	"time"
@@ -103,7 +103,7 @@ type Raft struct {
 
 //return 300 --450ms
 func RandomElectionTime() time.Duration {
-	
+
 	rand.Seed(time.Now().UnixNano())
 	num := time.Duration(rand.Intn(151) + 300)
 	return time.Duration(time.Millisecond * num)
@@ -190,10 +190,9 @@ type AppendEntriesArgs struct {
 	Entries      []Entry
 }
 type AppendEntriesReply struct {
-	Term          int
-	Success       bool
-	ConflictTerm  int
-	ConflictIndex int
+	Term         int
+	Success      bool
+	NextTryIndex int
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -203,16 +202,17 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// DPrintf("RaftNode[%d] Handle AppendEntries, LeaderId[%d] Term[%d] CurrentTerm[%d] role=[%s] logIndex[%d] prevLogIndex[%d] prevLogTerm[%d] commitIndex[%d] Entries[%v]",
 	// rf.me, rf.LeaderId, args.Term, rf.currentTerm, rf.state, rf.lastIndex(), args.PrevLogIndex, args.PrevLogTerm, rf.commitIndex, args.Entries)
-	reply.Term = rf.currentTerm
+
 	reply.Success = false
-	reply.ConflictIndex = -1
-	reply.ConflictTerm = -1
+
 	// defer func() {
 	// 	DPrintf("RaftNode[%d] Return AppendEntries, LeaderId[%d] Term[%d] CurrentTerm[%d] role=[%s] logIndex[%d] prevLogIndex[%d] prevLogTerm[%d] Success[%v] commitIndex[%d] log[%v] ConflictIndex[%d]",
 	// 	rf.me, rf.LeaderId, args.Term, rf.currentTerm, rf.state, rf.lastIndex(), args.PrevLogIndex, args.PrevLogTerm, reply.Success, rf.commitIndex, len(rf.log), reply.ConflictIndex)
 	// }()
 
 	if args.Term < rf.currentTerm {
+		reply.Term = rf.currentTerm
+		reply.NextTryIndex = rf.lastIndex() + 1
 		return
 	}
 	rf.ResetElectionTimer()
@@ -220,50 +220,44 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
 		rf.state = Follower
-		rf.votedFor = args.LeaderId
+		rf.votedFor = -1
 	}
 	rf.LeaderId = args.LeaderId
-
+	reply.Term = rf.currentTerm
 	if args.PrevLogIndex > rf.lastIndex() { // prevLogIndex位置没有日志的case
-		reply.ConflictIndex = len(rf.log)
+		reply.NextTryIndex = rf.lastIndex() + 1
 		return
 	}
-	// prevLogIndex位置有日志，那么判断term必须相同，否则false
-	if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm { //2
-		reply.ConflictTerm = rf.log[args.PrevLogIndex].Term
-		for index := 1; index <= args.PrevLogIndex; index++ { // 找到冲突term的首次出现位置，最差就是PrevLogIndex
-			if rf.log[index].Term == reply.ConflictTerm {
-				reply.ConflictIndex = index
+	baseIndex := 0
+
+	if args.PrevLogIndex >= baseIndex && args.PrevLogTerm != rf.log[args.PrevLogIndex-baseIndex].Term {
+		// if entry log[prevLogIndex] conflicts with new one, there may be conflict entries before.
+		// bypass all entries during the problematic term to speed up.
+		term := rf.log[args.PrevLogIndex-baseIndex].Term
+		for i := args.PrevLogIndex - 1; i >= baseIndex; i-- {
+			if rf.log[i-baseIndex].Term != term {
+				reply.NextTryIndex = i + 1
 				break
 			}
 		}
-		return
-	}
+	} else if args.PrevLogIndex >= baseIndex-1 {
+		// otherwise log up to prevLogIndex are safe.
+		// merge lcoal log and entries from leader, and apply log if commitIndex changes.
+		rf.log = rf.log[:args.PrevLogIndex-baseIndex+1]
+		rf.log = append(rf.log, args.Entries...)
 
-	//日志复制
-	for i, logEntry := range args.Entries {
-		index := args.PrevLogIndex + 1 + i
-		logPos := index
-		if index > rf.lastIndex() {
-			rf.log = append(rf.log, logEntry)
-		} else {
-			if rf.log[logPos].Term != logEntry.Term {
-				rf.log = rf.log[:logPos]          //3
-				rf.log = append(rf.log, logEntry) //4
-			}
+		reply.Success = true
+		reply.NextTryIndex = args.PrevLogIndex + len(args.Entries)
+
+		if rf.commitIndex < args.LeaderCommit {
+			rf.commitIndex = Min(args.LeaderCommit, rf.lastIndex())
 		}
 	}
-	// 更新提交下标
-	if args.LeaderCommit > rf.commitIndex {//5
-		rf.commitIndex = Min(args.LeaderCommit, rf.lastIndex())
-	}
-	
-	reply.Success = true
 }
-func Min(a,b int) int{
-	if a<b{
+func Min(a, b int) int {
+	if a < b {
 		return a
-	}else{
+	} else {
 		return b
 	}
 }
@@ -272,25 +266,20 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	return ok
 }
 func (rf *Raft) updateCommitIndex() {
-
-	sortedMatchIndex := make([]int, 0)
-	for i := 0; i < len(rf.peers); i++ {
-		if i == rf.me {
-			sortedMatchIndex = append(sortedMatchIndex, rf.lastIndex())
-		} else {
-			sortedMatchIndex = append(sortedMatchIndex, rf.matchIndex[i])
+	baseIndex := 0
+	for N := rf.lastIndex(); N > rf.commitIndex && rf.log[N-baseIndex].Term == rf.currentTerm; N-- {
+		// find if there exists an N to update commitIndex
+		count := 1
+		for i := range rf.peers {
+			if i != rf.me && rf.matchIndex[i] >= N {
+				count++
+			}
+		}
+		if count > len(rf.peers)/2 {
+			rf.commitIndex = N
+			break
 		}
 	}
-	sort.Ints(sortedMatchIndex)
-
-	newCommitIndex := sortedMatchIndex[len(rf.peers)/2]
-	// DPrintf("%d   and    len(log) = %d ", newCommitIndex, len(rf.log))
-
-	if newCommitIndex > rf.commitIndex || rf.log[newCommitIndex].Term == rf.currentTerm {
-
-		rf.commitIndex = newCommitIndex
-	}
-	// DPrintf("RaftNode[%d] updateCommitIndex, commitIndex[%d] matchIndex[%v]", rf.me, rf.commitIndex, rf.matchIndex)
 }
 func (rf *Raft) CallAppendEntries(peerId int) {
 	rf.mu.Lock()
@@ -331,34 +320,14 @@ func (rf *Raft) CallAppendEntries(peerId int) {
 			}
 
 			if reply.Success { // 同步日志成功
-				rf.nextIndex[peerId] = args.PrevLogIndex + len(args.Entries) + 1
-				rf.matchIndex[peerId] = rf.nextIndex[peerId] - 1
-				// DPrintf("peerId : %d   rf.matchIndex:{%v}",peerId,rf.matchIndex)
-				rf.updateCommitIndex()
-			} else {
-				// nextIndexBefore := rf.nextIndex[peerId] // 仅为打印log
-				if reply.ConflictTerm != -1 { // follower的prevLogIndex位置term冲突了
-					// 我们找leader log中conflictTerm最后出现位置，如果找到了就用它作为nextIndex，否则用follower的conflictIndex
-					conflictTermIndex := -1
-					for index := args.PrevLogIndex; index > 0; index-- {
-						if rf.log[index].Term == reply.ConflictTerm {
-							conflictTermIndex = index
-							break
-						}
-					}
-					if conflictTermIndex != -1 { // leader log出现了这个term，那么从这里prevLogIndex之前的最晚出现位置尝试同步
-						rf.nextIndex[peerId] = conflictTermIndex
-					} else {
-						rf.nextIndex[peerId] = reply.ConflictIndex // 用follower首次出现term的index作为同步开始
-					}
-				} else {
-					// follower没有发现prevLogIndex term冲突, 可能是被snapshot了或者日志长度不够
-					// 这时候我们将返回的conflictIndex设置为nextIndex即可
-					rf.nextIndex[peerId] = 1
-					DPrintf("!!!!!!!!!!!!!!================  ------111111111")
+				if len(args.Entries) > 0 {
+					rf.nextIndex[peerId] = args.PrevLogIndex + len(args.Entries) + 1
+					rf.matchIndex[peerId] = rf.nextIndex[peerId] - 1
 				}
-				// DPrintf("RaftNode[%d] back-off nextIndex, peer[%d] nextIndexBefore[%d] nextIndex[%d]", rf.me, peerId, nextIndexBefore, rf.nextIndex[peerId])
+			} else {
+				rf.nextIndex[peerId] = Min(reply.NextTryIndex, rf.lastIndex())
 			}
+			rf.updateCommitIndex()
 		}
 	}()
 
@@ -445,11 +414,11 @@ func (rf *Raft) AttemptElection() {
 		}(server)
 	}
 }
-func (rf *Raft) ResetElectionTimer(){
+func (rf *Raft) ResetElectionTimer() {
 	rf.electionTimer.Stop()
 	rf.electionTimer.Reset(RandomElectionTime())
 }
-func (rf *Raft) ResetHeartBeatTimer(){
+func (rf *Raft) ResetHeartBeatTimer() {
 	rf.heartBeatTimer.Stop()
 	rf.heartBeatTimer.Reset(StableHeartBeatTime())
 }
@@ -459,20 +428,6 @@ func (rf *Raft) GetLastEntry() Entry {
 func (rf *Raft) isLogUpToDate(lastLogIndex, lastLogTerm int) bool {
 	index := rf.lastIndex()
 	term := rf.lastTerm()
-	// DPrintf("term:%d  index: %d  lastLogTerm: %d lastLogIndex: %d",term,index,lastLogTerm,lastLogIndex)
-	// if term != lastLogTerm {
-	// 	if term > lastLogTerm {
-	// 		return true
-	// 	} else {
-	// 		return false
-	// 	}
-	// } else {
-	// 	if index > lastLogIndex {
-	// 		return true
-	// 	} else {
-	// 		return false
-	// 	}
-	// }
 	return lastLogTerm > term || (term == lastLogTerm && lastLogIndex >= index)
 }
 
@@ -559,7 +514,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	if rf.state != Leader {
 		return -1, -1, false
 	}
-	
+
 	// Your code here (2B).
 	entry := Entry{
 		Command: command,
@@ -601,9 +556,9 @@ func (rf *Raft) ticker() {
 		select {
 		case <-rf.electionTimer.C:
 			rf.mu.Lock()
-			if rf.state==Leader{
+			if rf.state == Leader {
 				rf.mu.Unlock()
-				continue;
+				continue
 			}
 			rf.state = Candidate
 			rf.currentTerm += 1
@@ -632,11 +587,10 @@ func (rf *Raft) lastTerm() int {
 	return rf.GetLastEntry().Term
 }
 func (rf *Raft) applier() {
-	noMore := false
+	
 	for !rf.killed() {
-		if noMore {
-			time.Sleep(10 * time.Millisecond)
-		}
+		time.Sleep(10 * time.Millisecond)
+
 		func() {
 			rf.mu.Lock()
 			defer rf.mu.Unlock()
@@ -689,7 +643,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		heartBeatTimer: time.NewTimer(StableHeartBeatTime()),
 		applyCh:        applyCh,
 	}
-	rf.log[0].Term = -1
+	rf.log[0].Term = 0
 	// Your initialization code here (2A, 2B, 2C).
 
 	// initialize from state persisted before a crash
