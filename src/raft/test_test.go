@@ -386,7 +386,7 @@ func TestRejoin2B(t *testing.T) {
 	DPrintf("-----------make old leader try to agree on some entries--------------------")
 	// new leader commits, also for index=2
 	cfg.one(103, 2, true)
-	DPrintf("-------new leader[2] commits, also for index=2 is 103")
+	DPrintf("-------new leader commits, also for index=2 is 103")
 	// new leader network failure
 	leader2 := cfg.checkOneLeader()
 	cfg.disconnect(leader2)
