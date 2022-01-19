@@ -206,11 +206,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	reply.Success = false
 
 	// defer func() {
-	// 	DPrintf("RaftNode[%d] Return AppendEntries, LeaderId[%d] Term[%d] CurrentTerm[%d] role=[%s] logIndex[%d] prevLogIndex[%d] prevLogTerm[%d] Success[%v] commitIndex[%d] log[%v] ConflictIndex[%d]",
-	// 	rf.me, rf.LeaderId, args.Term, rf.currentTerm, rf.state, rf.lastIndex(), args.PrevLogIndex, args.PrevLogTerm, reply.Success, rf.commitIndex, len(rf.log), reply.ConflictIndex)
+	// 	DPrintf("RaftNode[%d] Return AppendEntries, LeaderId[%d] Term[%d] CurrentTerm[%d] role=[%s] logIndex[%d] prevLogIndex[%d] prevLogTerm[%d] Success[%v] commitIndex[%d] log[%v] NextTryIndex[%d]",
+	// 	rf.me, rf.LeaderId, args.Term, rf.currentTerm, rf.state, rf.lastIndex(), args.PrevLogIndex, args.PrevLogTerm, reply.Success, rf.commitIndex, len(rf.log), reply.NextTryIndex)
 	// }()
 
-	if args.Term < rf.currentTerm {
+	if args.Term < rf.currentTerm {  //#1
 		reply.Term = rf.currentTerm
 		reply.NextTryIndex = rf.lastIndex() + 1
 		return
@@ -229,7 +229,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 	baseIndex := 0
-	DPrintf("[%d] PrevLogIndex: %d",rf.me,args.PrevLogIndex)
+	// DPrintf("[%d] PrevLogIndex: %d",rf.me,args.PrevLogIndex)
 	if args.PrevLogIndex >= baseIndex && args.PrevLogTerm != rf.log[args.PrevLogIndex-baseIndex].Term {
 		// if entry log[prevLogIndex] conflicts with new one, there may be conflict entries before.
 		// bypass all entries during the problematic term to speed up.
@@ -273,7 +273,7 @@ func (rf *Raft) updateCommitIndex() {
 				count++
 			}
 		}
-		if count > len(rf.peers)/2 {
+		if count > len(rf.peers)/2 && rf.log[N].Term == rf.currentTerm {
 			rf.commitIndex = N
 			break
 		}
@@ -295,6 +295,11 @@ func (rf *Raft) CallAppendEntries(peerId int) {
 
 	go func() {
 		reply := AppendEntriesReply{}
+		rf.mu.Lock()
+		if rf.state != Leader{
+			return
+		}
+		rf.mu.Unlock()
 		if ok := rf.sendAppendEntries(peerId, &args, &reply); ok {
 			rf.mu.Lock()
 			defer rf.mu.Unlock()
@@ -305,7 +310,8 @@ func (rf *Raft) CallAppendEntries(peerId int) {
 			// }()
 
 			// 如果不是rpc前的leader状态了，那么啥也别做了
-			if rf.currentTerm != args.Term || rf.state != Leader {
+			
+			if rf.currentTerm != args.Term  {
 				return
 			}
 			if reply.Term > rf.currentTerm { // 变成follower
@@ -321,11 +327,11 @@ func (rf *Raft) CallAppendEntries(peerId int) {
 				if len(args.Entries) > 0 {
 					rf.nextIndex[peerId] = args.PrevLogIndex + len(args.Entries) + 1
 					rf.matchIndex[peerId] = rf.nextIndex[peerId] - 1
+					rf.updateCommitIndex()
 				}
 			} else {
 				rf.nextIndex[peerId] = Min(reply.NextTryIndex, rf.lastIndex())
 			}
-			rf.updateCommitIndex()
 		}
 	}()
 
@@ -539,7 +545,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
-	//DPrintf("[%d] %v killed by outer caller in %d term-----------------------------------------",rf.me,rf.state,rf.currentTerm)
+	// DPrintf("[%d] %v killed by outer caller in %d term-----------------------------------------",rf.me,rf.state,rf.currentTerm)
 }
 
 func (rf *Raft) killed() bool {
@@ -602,7 +608,7 @@ func (rf *Raft) applier() {
 					CommandIndex: rf.lastApplied,
 					CommandTerm:  rf.log[appliedIndex].Term,
 				}
-				rf.applyCh <- appliedMsg // 引入snapshot后，这里必须在锁内投递了，否则会和snapshot的交错产生bug
+				rf.applyCh <- appliedMsg 
 				// DPrintf("........RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex)
 			}
 		}()
