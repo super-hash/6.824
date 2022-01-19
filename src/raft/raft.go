@@ -297,6 +297,7 @@ func (rf *Raft) CallAppendEntries(peerId int) {
 		reply := AppendEntriesReply{}
 		rf.mu.Lock()
 		if rf.state != Leader{
+			rf.mu.Unlock()
 			return
 		}
 		rf.mu.Unlock()
