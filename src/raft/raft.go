@@ -190,9 +190,10 @@ type AppendEntriesArgs struct {
 	Entries      []Entry
 }
 type AppendEntriesReply struct {
-	Term         int
-	Success      bool
-	NextTryIndex int
+	Term          int
+	Success       bool
+	ConflictTerm  int
+	ConflictIndex int
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -204,15 +205,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// rf.me, rf.LeaderId, args.Term, rf.currentTerm, rf.state, rf.lastIndex(), args.PrevLogIndex, args.PrevLogTerm, rf.commitIndex, args.Entries)
 
 	reply.Success = false
-
+	reply.ConflictTerm = -1
 	// defer func() {
 	// 	DPrintf("RaftNode[%d] Return AppendEntries, LeaderId[%d] Term[%d] CurrentTerm[%d] role=[%s] logIndex[%d] prevLogIndex[%d] prevLogTerm[%d] Success[%v] commitIndex[%d] log[%v] NextTryIndex[%d]",
 	// 	rf.me, rf.LeaderId, args.Term, rf.currentTerm, rf.state, rf.lastIndex(), args.PrevLogIndex, args.PrevLogTerm, reply.Success, rf.commitIndex, len(rf.log), reply.NextTryIndex)
 	// }()
 
-	if args.Term < rf.currentTerm {  //#1
+	if args.Term < rf.currentTerm { //#1
 		reply.Term = rf.currentTerm
-		reply.NextTryIndex = rf.lastIndex() + 1
 		return
 	}
 	rf.ResetElectionTimer()
@@ -225,29 +225,27 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.LeaderId = args.LeaderId
 	reply.Term = rf.currentTerm
 	if args.PrevLogIndex > rf.lastIndex() { // prevLogIndex位置没有日志的case
-		reply.NextTryIndex = rf.lastIndex() + 1
+		reply.ConflictIndex = len(rf.log)
 		return
 	}
-	baseIndex := 0
+	
 	// DPrintf("[%d] PrevLogIndex: %d",rf.me,args.PrevLogIndex)
-	if args.PrevLogIndex >= baseIndex && args.PrevLogTerm != rf.log[args.PrevLogIndex-baseIndex].Term {
+	if args.PrevLogIndex >= 0 && args.PrevLogTerm != rf.log[args.PrevLogIndex].Term {
 		// if entry log[prevLogIndex] conflicts with new one, there may be conflict entries before.
 		// bypass all entries during the problematic term to speed up.
-		term := rf.log[args.PrevLogIndex-baseIndex].Term
-		for i := args.PrevLogIndex - 1; i >= baseIndex; i-- {
-			if rf.log[i-baseIndex].Term != term {
-				reply.NextTryIndex = i + 1
+		term := rf.log[args.PrevLogIndex].Term
+		reply.ConflictTerm = term
+		for i := args.PrevLogIndex - 1; i >= 0; i-- {
+			if rf.log[i].Term != term {
+				reply.ConflictIndex = i + 1
 				break
 			}
 		}
-	} else if args.PrevLogIndex >= baseIndex {
+	} else if args.PrevLogIndex >= 0 {
 		//匹配成功则只保留log【0--PrevLogIndex],追加args.Entries
-		rf.log = rf.log[:args.PrevLogIndex-baseIndex+1] 
+		rf.log = rf.log[:args.PrevLogIndex+1]
 		rf.log = append(rf.log, args.Entries...)
-
 		reply.Success = true
-		reply.NextTryIndex = args.PrevLogIndex + len(args.Entries) 
-
 		if rf.commitIndex < args.LeaderCommit {
 			rf.commitIndex = Min(args.LeaderCommit, rf.lastIndex())
 		}
@@ -296,7 +294,7 @@ func (rf *Raft) CallAppendEntries(peerId int) {
 	go func() {
 		reply := AppendEntriesReply{}
 		rf.mu.Lock()
-		if rf.state != Leader{
+		if rf.state != Leader {
 			rf.mu.Unlock()
 			return
 		}
@@ -310,9 +308,7 @@ func (rf *Raft) CallAppendEntries(peerId int) {
 			// 	rf.me, rf.currentTerm, peerId, rf.lastIndex(), rf.nextIndex[peerId], rf.matchIndex[peerId], rf.commitIndex)
 			// }()
 
-			// 如果不是rpc前的leader状态了，那么啥也别做了
-			
-			if rf.currentTerm != args.Term  {
+			if rf.currentTerm != args.Term {
 				return
 			}
 			if reply.Term > rf.currentTerm { // 变成follower
@@ -330,8 +326,23 @@ func (rf *Raft) CallAppendEntries(peerId int) {
 					rf.matchIndex[peerId] = rf.nextIndex[peerId] - 1
 					rf.updateCommitIndex()
 				}
-			} else {
-				rf.nextIndex[peerId] = Min(reply.NextTryIndex, rf.lastIndex())
+			} else { //加速日志回溯（https://thesquareplanet.com/blog/students-guide-to-raft/）
+				if  reply.ConflictTerm!=-1{
+					conflictIndex :=-1
+					for i:=len(rf.log)-1;i>=0;i--{
+						if rf.log[i].Term == reply.ConflictTerm{
+							conflictIndex = i+1;
+							break;
+						}
+					}
+					if conflictIndex == -1{
+						rf.nextIndex[peerId] = reply.ConflictIndex
+					}else{
+						rf.nextIndex[peerId] = conflictIndex
+					}
+				}else{
+					rf.nextIndex[peerId] = reply.ConflictIndex
+				}
 			}
 		}
 	}()
@@ -592,7 +603,7 @@ func (rf *Raft) lastTerm() int {
 	return rf.GetLastEntry().Term
 }
 func (rf *Raft) applier() {
-	
+
 	for !rf.killed() {
 		time.Sleep(10 * time.Millisecond)
 
@@ -609,7 +620,7 @@ func (rf *Raft) applier() {
 					CommandIndex: rf.lastApplied,
 					CommandTerm:  rf.log[appliedIndex].Term,
 				}
-				rf.applyCh <- appliedMsg 
+				rf.applyCh <- appliedMsg
 				// DPrintf("........RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex)
 			}
 		}()
