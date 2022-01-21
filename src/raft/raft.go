@@ -333,13 +333,13 @@ func (rf *Raft) CallAppendEntries(peerId int) {
 			if reply.Success { // 同步日志成功
 				if len(args.Entries) > 0 {
 					rf.nextIndex[peerId] = args.PrevLogIndex + len(args.Entries) + 1
-					rf.matchIndex[peerId] = rf.nextIndex[peerId] - 1
+					rf.matchIndex[peerId] = args.PrevLogIndex + len(args.Entries)
 					rf.updateCommitIndex()
 				}
 			} else { //加速日志回溯（https://thesquareplanet.com/blog/students-guide-to-raft/）
 				if reply.ConflictTerm != -1 {
 					conflictIndex := -1
-					for i := len(rf.log) - 1; i >= 0; i-- {
+					for i := args.PrevLogIndex; i >= 0; i-- {
 						if rf.log[i].Term == reply.ConflictTerm {
 							conflictIndex = i + 1
 							break
