@@ -20,12 +20,14 @@ package raft
 import (
 	//	"bytes"
 
+	"bytes"
 	"math/rand"
 
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"6.824/labgob"
 	"6.824/labrpc"
 )
 
@@ -103,7 +105,6 @@ type Raft struct {
 
 //return 300 --450ms
 func RandomElectionTime() time.Duration {
-
 	rand.Seed(time.Now().UnixNano())
 	num := time.Duration(rand.Intn(151) + 300)
 	return time.Duration(time.Millisecond * num)
@@ -111,7 +112,7 @@ func RandomElectionTime() time.Duration {
 
 //return 120ms
 func StableHeartBeatTime() time.Duration {
-	return time.Duration(time.Millisecond * 120)
+	return time.Duration(time.Millisecond * 50)
 }
 
 // return currentTerm and whether this server
@@ -123,20 +124,27 @@ func (rf *Raft) GetState() (int, bool) {
 	return rf.currentTerm, rf.state == Leader
 }
 
+func (rf *Raft) getRaftState() []byte {
+
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.log)
+	data := w.Bytes()
+	return data
+}
+
 //
 // save Raft's persistent state to stable storage,
 // where it can later be retrieved after a crash and restart.
 // see paper's Figure 2 for a description of what should be persistent.
 //
+
 func (rf *Raft) persist() {
 	// Your code here (2C).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
+	data := rf.getRaftState()
+	rf.persister.SaveRaftState(data)
 }
 
 //
@@ -146,19 +154,19 @@ func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}
-	// Your code here (2C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var currentTerm int
+	var votedFor int
+	var log []Entry
+	rf.mu.Lock()
+	d.Decode(&currentTerm)
+	d.Decode(&votedFor)
+	d.Decode(&log)
+	rf.currentTerm = currentTerm
+	rf.votedFor = votedFor
+	rf.log = log
+	rf.mu.Unlock()
 }
 
 //
@@ -200,6 +208,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	defer rf.persist()
 
 	// DPrintf("RaftNode[%d] Handle AppendEntries, LeaderId[%d] Term[%d] CurrentTerm[%d] role=[%s] logIndex[%d] prevLogIndex[%d] prevLogTerm[%d] commitIndex[%d] Entries[%v]",
 	// rf.me, rf.LeaderId, args.Term, rf.currentTerm, rf.state, rf.lastIndex(), args.PrevLogIndex, args.PrevLogTerm, rf.commitIndex, args.Entries)
@@ -228,7 +237,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.ConflictIndex = len(rf.log)
 		return
 	}
-	
+
 	// DPrintf("[%d] PrevLogIndex: %d",rf.me,args.PrevLogIndex)
 	if args.PrevLogIndex >= 0 && args.PrevLogTerm != rf.log[args.PrevLogIndex].Term {
 		// if entry log[prevLogIndex] conflicts with new one, there may be conflict entries before.
@@ -316,6 +325,7 @@ func (rf *Raft) CallAppendEntries(peerId int) {
 				rf.LeaderId = -1
 				rf.currentTerm = reply.Term
 				rf.votedFor = -1
+				rf.persist()
 				rf.ResetElectionTimer()
 				return
 			}
@@ -327,20 +337,20 @@ func (rf *Raft) CallAppendEntries(peerId int) {
 					rf.updateCommitIndex()
 				}
 			} else { //加速日志回溯（https://thesquareplanet.com/blog/students-guide-to-raft/）
-				if  reply.ConflictTerm!=-1{
-					conflictIndex :=-1
-					for i:=len(rf.log)-1;i>=0;i--{
-						if rf.log[i].Term == reply.ConflictTerm{
-							conflictIndex = i+1;
-							break;
+				if reply.ConflictTerm != -1 {
+					conflictIndex := -1
+					for i := len(rf.log) - 1; i >= 0; i-- {
+						if rf.log[i].Term == reply.ConflictTerm {
+							conflictIndex = i + 1
+							break
 						}
 					}
-					if conflictIndex == -1{
+					if conflictIndex == -1 {
 						rf.nextIndex[peerId] = reply.ConflictIndex
-					}else{
+					} else {
 						rf.nextIndex[peerId] = conflictIndex
 					}
-				}else{
+				} else {
 					rf.nextIndex[peerId] = reply.ConflictIndex
 				}
 			}
@@ -393,6 +403,7 @@ func (rf *Raft) AttemptElection() {
 
 	count := 1
 	rf.votedFor = rf.me
+	rf.persist()
 	for server := range rf.peers {
 		if server == rf.me {
 			continue
@@ -423,6 +434,7 @@ func (rf *Raft) AttemptElection() {
 						rf.ResetElectionTimer()
 						rf.currentTerm = reply.Term
 						rf.votedFor = -1
+						rf.persist()
 						// DPrintf("%d %v to Follower", rf.me, rf.state)
 					}
 				}
@@ -469,6 +481,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 	rf.votedFor = args.CandidateId
+	rf.persist()
 	//DPrintf("[%d]  rf.votedFor : %d",rf.me,rf.votedFor)
 	rf.ResetElectionTimer()
 	reply.Term, reply.VoteGranted = rf.currentTerm, true
@@ -538,6 +551,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 	rf.log = append(rf.log, entry)
 	index := rf.lastIndex()
+	rf.persist()
 	//rf.BroadcastHeartBeat()
 	// DPrintf("{Node %v} receives a new command[%v]is {%v} to replicate in term %v", rf.me, index, entry,rf.currentTerm)
 	return index, rf.currentTerm, true
@@ -579,6 +593,7 @@ func (rf *Raft) ticker() {
 			rf.state = Candidate
 			rf.currentTerm += 1
 			rf.votedFor = rf.me
+			rf.persist()
 			// DPrintf("%d %v Attempting election  in %d term \n", rf.me, rf.state, rf.currentTerm)
 			rf.ResetElectionTimer()
 			rf.AttemptElection()
@@ -664,6 +679,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+	rf.persist()
 	// start ticker goroutine to start elections
 	go rf.ticker()
 
