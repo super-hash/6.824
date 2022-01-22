@@ -209,7 +209,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	defer rf.persist()
-
 	// DPrintf("RaftNode[%d] Handle AppendEntries, LeaderId[%d] Term[%d] CurrentTerm[%d] role=[%s] logIndex[%d] prevLogIndex[%d] prevLogTerm[%d] commitIndex[%d] Entries[%v]",
 	// rf.me, rf.LeaderId, args.Term, rf.currentTerm, rf.state, rf.lastIndex(), args.PrevLogIndex, args.PrevLogTerm, rf.commitIndex, args.Entries)
 
@@ -230,35 +229,39 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.currentTerm = args.Term
 		rf.state = Follower
 		rf.votedFor = -1
+		rf.LeaderId = -1
+		rf.ResetElectionTimer()
 	}
 	rf.LeaderId = args.LeaderId
 	reply.Term = rf.currentTerm
-	if args.PrevLogIndex > rf.lastIndex() { // prevLogIndex位置没有日志的case
+
+	if args.PrevLogIndex+1 > len(rf.log) { // prevLogIndex位置没有日志的case
 		reply.ConflictIndex = len(rf.log)
 		return
 	}
 
 	// DPrintf("[%d] PrevLogIndex: %d",rf.me,args.PrevLogIndex)
-	if args.PrevLogIndex >= 0 && args.PrevLogTerm != rf.log[args.PrevLogIndex].Term {
+	if args.PrevLogTerm != rf.log[args.PrevLogIndex].Term {
 		// if entry log[prevLogIndex] conflicts with new one, there may be conflict entries before.
 		// bypass all entries during the problematic term to speed up.
-		term := rf.log[args.PrevLogIndex].Term
-		reply.ConflictTerm = term
-		for i := args.PrevLogIndex - 1; i >= 0; i-- {
-			if rf.log[i].Term != term {
-				reply.ConflictIndex = i + 1
-				break
-			}
+		reply.ConflictTerm = rf.log[args.PrevLogIndex].Term
+		conflictIndex := args.PrevLogIndex
+		for rf.log[conflictIndex-1].Term == reply.ConflictTerm {
+			conflictIndex--
 		}
-	} else if args.PrevLogIndex >= 0 {
-		//匹配成功则只保留log【0--PrevLogIndex],追加args.Entries
-		rf.log = rf.log[:args.PrevLogIndex+1]
-		rf.log = append(rf.log, args.Entries...)
-		reply.Success = true
-		if rf.commitIndex < args.LeaderCommit {
-			rf.commitIndex = Min(args.LeaderCommit, rf.lastIndex())
-		}
+		reply.ConflictIndex = conflictIndex
+		return
 	}
+
+	//匹配成功则只保留log【0--PrevLogIndex],追加args.Entries
+	rf.log = rf.log[:args.PrevLogIndex+1]
+	rf.log = append(rf.log, args.Entries...)
+
+	reply.Success = true
+	if rf.commitIndex < args.LeaderCommit {
+		rf.commitIndex = Min(args.LeaderCommit, rf.lastIndex())
+	}
+
 }
 func Min(a, b int) int {
 	if a < b {
@@ -316,7 +319,9 @@ func (rf *Raft) CallAppendEntries(peerId int) {
 			// 	DPrintf("RaftNode[%d] appendEntries ends,  currentTerm[%d]  peer[%d] logIndex=[%d] nextIndex[%d] matchIndex[%d] commitIndex[%d]",
 			// 	rf.me, rf.currentTerm, peerId, rf.lastIndex(), rf.nextIndex[peerId], rf.matchIndex[peerId], rf.commitIndex)
 			// }()
-
+			if rf.state != Leader {
+				return
+			}
 			if rf.currentTerm != args.Term {
 				return
 			}
@@ -337,21 +342,29 @@ func (rf *Raft) CallAppendEntries(peerId int) {
 					rf.updateCommitIndex()
 				}
 			} else { //加速日志回溯（https://thesquareplanet.com/blog/students-guide-to-raft/）
+				/*
+				1.优化以后，理想情况是一个 RPC 能够至少检验一个 Term 的 log。
+				2.Follower 在 prevLogIndex 处发现不匹配，设置好 ConflictTerm，同时 ConflictIndex 
+				被设置为这个 ConflictTerm 的 第一个 log entry。如果 Leader 中不存在 ConflictTerm ,
+				则会使用 ConflictIndex 来跳过这整个 ConflictTerm 的所有 log。
+
+				3.如果 Follower 返回的 ConflictTerm 在 Leader 的 log 中找不到， 
+				说明这个 ConflictTerm 不会存在需要 replication 的 log。 对下一个 RPC 中的 prevLogIndex 
+				的最好的猜测就是将 nextIndex 设置为 ConflictIndex，直接跳过 ConflictIndex。
+
+				4.如果 Follower 返回的 ConflictTerm 在 Leader 的 log 中找到， 说明我们还需要 replicate ConflictTerm 的某些 log，
+				此时就不能使用 ConflictIndex 跳过， 而是将 nextIndex 设置为 Leader 属于 ConflictTerm 的 log 之后的 第一个 log，
+				 这样使下一轮 prevLogIndex 能够从正确的 log 开始。
+				*/
+				rf.nextIndex[peerId] = reply.ConflictIndex
 				if reply.ConflictTerm != -1 {
-					conflictIndex := -1
-					for i := args.PrevLogIndex; i >= 0; i-- {
-						if rf.log[i].Term == reply.ConflictTerm {
-							conflictIndex = i + 1
+					for i := args.PrevLogIndex; i >= 1; i-- {
+						if rf.log[i-1].Term == reply.ConflictTerm {
+							// in next trial, check if log entries in ConflictTerm matches
+							rf.nextIndex[peerId] = i
 							break
 						}
 					}
-					if conflictIndex == -1 {
-						rf.nextIndex[peerId] = reply.ConflictIndex
-					} else {
-						rf.nextIndex[peerId] = conflictIndex
-					}
-				} else {
-					rf.nextIndex[peerId] = reply.ConflictIndex
 				}
 			}
 		}
@@ -414,6 +427,7 @@ func (rf *Raft) AttemptElection() {
 				rf.mu.Lock()
 				defer rf.mu.Unlock()
 				// DPrintf("[%d] finish sending request vote  %d  %v in %d term", rf.me, server, reply.VoteGranted, rf.currentTerm)
+
 				if rf.currentTerm == args.Term && rf.state == Candidate {
 
 					if reply.VoteGranted {
@@ -434,6 +448,7 @@ func (rf *Raft) AttemptElection() {
 						rf.ResetElectionTimer()
 						rf.currentTerm = reply.Term
 						rf.votedFor = -1
+						rf.LeaderId = -1
 						rf.persist()
 						// DPrintf("%d %v to Follower", rf.me, rf.state)
 					}
@@ -466,6 +481,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	defer rf.persist()
 	if args.Term < rf.currentTerm || (args.Term == rf.currentTerm && rf.votedFor != -1 && rf.votedFor != args.CandidateId) {
 		reply.Term, reply.VoteGranted = rf.currentTerm, false
 		return
@@ -481,7 +497,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 	rf.votedFor = args.CandidateId
-	rf.persist()
 	//DPrintf("[%d]  rf.votedFor : %d",rf.me,rf.votedFor)
 	rf.ResetElectionTimer()
 	reply.Term, reply.VoteGranted = rf.currentTerm, true
