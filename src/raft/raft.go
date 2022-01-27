@@ -245,7 +245,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
-	//日志复制
+	//日志复制(只有在有冲突时才发生更改)
 	for i, logEntry := range args.Entries {
 		index := args.PrevLogIndex + 1 + i
 		logPos := index
@@ -287,7 +287,6 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 }
 func (rf *Raft) updateCommitIndex() {
 	for N := rf.lastIndex(); N > rf.commitIndex && rf.log[N].Term == rf.currentTerm; N-- {
-		// find if there exists an N to update commitIndex
 		count := 1
 		for i := range rf.peers {
 			if i != rf.me && rf.matchIndex[i] >= N {
@@ -333,7 +332,7 @@ func (rf *Raft) CallAppendEntries(peerId int) {
 			if rf.state != Leader || rf.currentTerm != args.Term{
 				return
 			}
-			if reply.Term > rf.currentTerm { // 变成follower
+			if reply.Term > rf.currentTerm { 
 				rf.stopToFollower(reply.Term)
 				rf.persist()
 				return
@@ -365,7 +364,6 @@ func (rf *Raft) CallAppendEntries(peerId int) {
 				if reply.ConflictTerm != -1 {
 					for i := args.PrevLogIndex; i >= 1; i-- {
 						if rf.log[i-1].Term == reply.ConflictTerm {
-							// in next trial, check if log entries in ConflictTerm matches
 							rf.nextIndex[peerId] = i
 							break
 						}
@@ -433,7 +431,9 @@ func (rf *Raft) AttemptElection() {
 				defer rf.mu.Unlock()
 				// DPrintf("[%d] finish sending request vote  %d  %v in %d term", rf.me, server, reply.VoteGranted, rf.currentTerm)
 
-				if rf.currentTerm == args.Term && rf.state == Candidate {
+				if rf.currentTerm != args.Term || rf.state != Candidate {
+					return
+				}
 					if reply.Term > rf.currentTerm {
 						rf.stopToFollower(reply.Term)
 						rf.persist()
@@ -449,14 +449,14 @@ func (rf *Raft) AttemptElection() {
 							for i := 0; i < len(rf.peers); i++ {
 								rf.matchIndex[i] = 0
 							}
-							rf.electionTimer.Stop()
+							rf.electionTimer.Stop() 
 							rf.ResetHeartBeatTimer()
 							rf.BroadcastHeartBeat()
 						}
 					}
 
 				}
-			}
+			
 		}(server)
 	}
 }
@@ -559,7 +559,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	if rf.state != Leader {
 		return -1, -1, false
 	}
-
 	// Your code here (2B).
 	entry := Entry{
 		Command: command,
@@ -568,7 +567,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.log = append(rf.log, entry)
 	index := rf.lastIndex()
 	rf.persist()
-	//rf.BroadcastHeartBeat()
 	// DPrintf("{Node %v} receives a new command[%v]is {%v} to replicate in term %v", rf.me, index, entry,rf.currentTerm)
 	return index, rf.currentTerm, true
 }
@@ -638,18 +636,16 @@ func (rf *Raft) applier() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	for rf.commitIndex > rf.lastApplied {
-		rf.lastApplied += 1
-		appliedIndex := rf.lastApplied
-		appliedMsg := ApplyMsg{
+	for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+		rf.applyCh <- ApplyMsg{
 			CommandValid: true,
-			Command:      rf.log[appliedIndex].Command,
-			CommandIndex: rf.lastApplied,
-			CommandTerm:  rf.log[appliedIndex].Term,
+			Command: rf.log[i].Command,
+			CommandIndex: i,
 		}
-		rf.applyCh <- appliedMsg
+		rf.lastApplied = i
 		// DPrintf("........RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex)
 	}
+	
 }
 
 // the service or tester wants to create a Raft server. the ports
