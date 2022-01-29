@@ -8,12 +8,14 @@ package raft
 // test with the original before submitting.
 //
 
-import "testing"
-import "fmt"
-import "time"
-import "math/rand"
-import "sync/atomic"
-import "sync"
+import (
+	"fmt"
+	"math/rand"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
 
 // The tester generously allows solutions to complete elections in one second
 // (much more than the paper's range of timeouts).
@@ -27,7 +29,7 @@ func TestInitialElection2A(t *testing.T) {
 	cfg.begin("Test (2A): initial election")
 
 	// is a leader elected?
-	time.Sleep(time.Second*3)
+	time.Sleep(time.Second * 3)
 	cfg.checkOneLeader()
 
 	// sleep a bit to avoid racing with followers learning of the
@@ -394,7 +396,7 @@ func TestRejoin2B(t *testing.T) {
 	// old leader connected again
 	cfg.connect(leader1)
 	// DPrintf("------------old leader[%d] connected again",leader1)
-	time.Sleep(time.Millisecond*10)
+	time.Sleep(time.Millisecond * 10)
 	cfg.one(104, 2, true)
 
 	// all together now
@@ -1015,79 +1017,79 @@ func TestUnreliableChurn2C(t *testing.T) {
 	internalChurn(t, true)
 }
 
-// const MAXLOGSIZE = 2000
+const MAXLOGSIZE = 2000
 
-// func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash bool) {
-// 	iters := 30
-// 	servers := 3
-// 	cfg := make_config(t, servers, !reliable, true)
-// 	defer cfg.cleanup()
+func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash bool) {
+	iters := 30
+	servers := 3
+	cfg := make_config(t, servers, !reliable, true)
+	defer cfg.cleanup()
 
-// 	cfg.begin(name)
+	cfg.begin(name)
 
-// 	cfg.one(rand.Int(), servers, true)
-// 	leader1 := cfg.checkOneLeader()
+	cfg.one(rand.Int(), servers, true)
+	leader1 := cfg.checkOneLeader()
 
-// 	for i := 0; i < iters; i++ {
-// 		victim := (leader1 + 1) % servers
-// 		sender := leader1
-// 		if i%3 == 1 {
-// 			sender = (leader1 + 1) % servers
-// 			victim = leader1
-// 		}
+	for i := 0; i < iters; i++ {
+		victim := (leader1 + 1) % servers
+		sender := leader1
+		if i%3 == 1 {
+			sender = (leader1 + 1) % servers
+			victim = leader1
+		}
 
-// 		if disconnect {
-// 			cfg.disconnect(victim)
-// 			cfg.one(rand.Int(), servers-1, true)
-// 		}
-// 		if crash {
-// 			cfg.crash1(victim)
-// 			cfg.one(rand.Int(), servers-1, true)
-// 		}
-// 		// send enough to get a snapshot
-// 		for i := 0; i < SnapShotInterval+1; i++ {
-// 			cfg.rafts[sender].Start(rand.Int())
-// 		}
-// 		// let applier threads catch up with the Start()'s
-// 		cfg.one(rand.Int(), servers-1, true)
+		if disconnect {
+			cfg.disconnect(victim)
+			cfg.one(rand.Int(), servers-1, true)
+		}
+		if crash {
+			cfg.crash1(victim)
+			cfg.one(rand.Int(), servers-1, true)
+		}
+		// send enough to get a snapshot
+		for i := 0; i < SnapShotInterval+1; i++ {
+			cfg.rafts[sender].Start(rand.Int())
+		}
+		// let applier threads catch up with the Start()'s
+		cfg.one(rand.Int(), servers-1, true)
 
-// 		if cfg.LogSize() >= MAXLOGSIZE {
-// 			cfg.t.Fatalf("Log size too large")
-// 		}
-// 		if disconnect {
-// 			// reconnect a follower, who maybe behind and
-// 			// needs to rceive a snapshot to catch up.
-// 			cfg.connect(victim)
-// 			cfg.one(rand.Int(), servers, true)
-// 			leader1 = cfg.checkOneLeader()
-// 		}
-// 		if crash {
-// 			cfg.start1(victim, cfg.applierSnap)
-// 			cfg.connect(victim)
-// 			cfg.one(rand.Int(), servers, true)
-// 			leader1 = cfg.checkOneLeader()
-// 		}
-// 	}
-// 	cfg.end()
-// }
+		if cfg.LogSize() >= MAXLOGSIZE {
+			cfg.t.Fatalf("Log size too large")
+		}
+		if disconnect {
+			// reconnect a follower, who maybe behind and
+			// needs to rceive a snapshot to catch up.
+			cfg.connect(victim)
+			cfg.one(rand.Int(), servers, true)
+			leader1 = cfg.checkOneLeader()
+		}
+		if crash {
+			cfg.start1(victim, cfg.applierSnap)
+			cfg.connect(victim)
+			cfg.one(rand.Int(), servers, true)
+			leader1 = cfg.checkOneLeader()
+		}
+	}
+	cfg.end()
+}
 
-// func TestSnapshotBasic2D(t *testing.T) {
-// 	snapcommon(t, "Test (2D): snapshots basic", false, true, false)
-// }
+func TestSnapshotBasic2D(t *testing.T) {
+	snapcommon(t, "Test (2D): snapshots basic", false, true, false)
+}
 
-// func TestSnapshotInstall2D(t *testing.T) {
-// 	snapcommon(t, "Test (2D): install snapshots (disconnect)", true, true, false)
-// }
+func TestSnapshotInstall2D(t *testing.T) {
+	snapcommon(t, "Test (2D): install snapshots (disconnect)", true, true, false)
+}
 
-// func TestSnapshotInstallUnreliable2D(t *testing.T) {
-// 	snapcommon(t, "Test (2D): install snapshots (disconnect+unreliable)",
-// 		true, false, false)
-// }
+func TestSnapshotInstallUnreliable2D(t *testing.T) {
+	snapcommon(t, "Test (2D): install snapshots (disconnect+unreliable)",
+		true, false, false)
+}
 
-// func TestSnapshotInstallCrash2D(t *testing.T) {
-// 	snapcommon(t, "Test (2D): install snapshots (crash)", false, true, true)
-// }
+func TestSnapshotInstallCrash2D(t *testing.T) {
+	snapcommon(t, "Test (2D): install snapshots (crash)", false, true, true)
+}
 
-// func TestSnapshotInstallUnCrash2D(t *testing.T) {
-// 	snapcommon(t, "Test (2D): install snapshots (unreliable+crash)", false, false, true)
-// }
+func TestSnapshotInstallUnCrash2D(t *testing.T) {
+	snapcommon(t, "Test (2D): install snapshots (unreliable+crash)", false, false, true)
+}
