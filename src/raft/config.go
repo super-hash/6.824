@@ -181,8 +181,11 @@ const SnapShotInterval = 10
 func (cfg *config) applierSnap(i int, applyCh chan ApplyMsg) {
 	lastApplied := 0
 	for m := range applyCh {
+		DPrintf("======================================================================================")
+		DPrintf("applierSnap")
+		DPrintf("======================================================================================")
 		if m.SnapshotValid {
-			//DPrintf("Installsnapshot %v %v\n", m.SnapshotIndex, lastApplied)
+			DPrintf("Installsnapshot %v %v\n", m.SnapshotIndex, lastApplied)
 			cfg.mu.Lock()
 			if cfg.rafts[i].CondInstallSnapshot(m.SnapshotTerm,
 				m.SnapshotIndex, m.Snapshot) {

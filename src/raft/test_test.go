@@ -1040,6 +1040,7 @@ func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash
 		DPrintf("******************************iters : [%d]************************",i)
 		if disconnect {
 			cfg.disconnect(victim)
+			DPrintf("victim [%d] disconnect-------------------------------*************",victim)
 			cfg.one(rand.Int(), servers-1, true)
 		}
 		if crash {
