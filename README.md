@@ -9,3 +9,5 @@ pass lab2B  in 2022.1.14
 ----
 pass lab2C  in 2022.1.26
 ----
+pass lab2D  in 2022.2.2
+----
