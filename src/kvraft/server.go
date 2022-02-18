@@ -1,15 +1,18 @@
 package kvraft
 
 import (
+	"log"
+	"strconv"
+	"sync"
+	"sync/atomic"
+	"time"
+
 	"6.824/labgob"
 	"6.824/labrpc"
 	"6.824/raft"
-	"log"
-	"sync"
-	"sync/atomic"
 )
 
-const Debug = false
+const Debug = true
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -18,11 +21,15 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
-
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	OpType string
+	Key    string
+	Value  string
+	Cid    int64
+	SeqNum int
 }
 
 type KVServer struct {
@@ -33,17 +40,69 @@ type KVServer struct {
 	dead    int32 // set by Kill()
 
 	maxraftstate int // snapshot if log grows this big
-
-	// Your definitions here.
+	// timeout      time.Duration
+	Persister    *raft.Persister
+	db           map[string]string
+	chMap        map[int]chan Op
+	cid2Seq map[int64]int
+    killCh  chan bool
 }
-
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+	originOp := Op{
+		OpType: "Get",
+		Key:    args.Key,
+		Value:  strconv.FormatInt(nrand(), 10),
+		Cid:    0,
+		SeqNum: 0,
+	}
+	reply.WrongLeader = true
+	index, _, isLeader := kv.rf.Start(originOp)
+	if !isLeader {
+		return
+	}
+	ch := kv.putIfAbsent(index)
+	op := beNotified(ch)
+	if equalOp(op, originOp) {
+		reply.WrongLeader = false
+		kv.mu.Lock()
+		reply.Value = kv.db[op.Key]
+		kv.mu.Unlock()
+	}
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	// Your code here.
+	originOp := Op{args.Op, args.Key, args.Value, args.Cid, args.SeqNum}
+	reply.WrongLeader = true
+	index, _, isLeader := kv.rf.Start(originOp)
+	if !isLeader {
+		return
+	}
+	ch := kv.putIfAbsent(index)
+	op := beNotified(ch)
+	if equalOp(originOp, op) {
+		reply.WrongLeader = false
+	}
+}
+func beNotified(ch chan Op) Op {
+	select {
+	case notifyArg := <-ch:
+		return notifyArg
+	case <-time.After(time.Duration(600) * time.Millisecond):
+		return Op{}
+	}
+}
+func (kv *KVServer) putIfAbsent(idx int) chan Op {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	if _, ok := kv.chMap[idx]; !ok {
+		kv.chMap[idx] = make(chan Op, 1)
+	}
+	return kv.chMap[idx]
+}
+func equalOp(a Op, b Op) bool {
+	return a.Key == b.Key && a.Value == b.Value && a.OpType == b.OpType && a.SeqNum == b.SeqNum && a.Cid == b.Cid
 }
 
 //
@@ -58,6 +117,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 //
 func (kv *KVServer) Kill() {
 	atomic.StoreInt32(&kv.dead, 1)
+	kv.killCh <- true
 	kv.rf.Kill()
 	// Your code here, if desired.
 }
@@ -66,7 +126,13 @@ func (kv *KVServer) killed() bool {
 	z := atomic.LoadInt32(&kv.dead)
 	return z == 1
 }
-
+func send(notifyCh chan Op,op Op) {
+    select{
+    case  <-notifyCh:
+    default:
+    }
+    notifyCh <- op
+}
 //
 // servers[] contains the ports of the set of
 // servers that will cooperate via Raft to
@@ -81,6 +147,8 @@ func (kv *KVServer) killed() bool {
 // StartKVServer() must return quickly, so it should start goroutines
 // for any long-running work.
 //
+
+//一个KVServer对应一个Raft
 func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister, maxraftstate int) *KVServer {
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
@@ -91,11 +159,37 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.maxraftstate = maxraftstate
 
 	// You may need initialization code here.
+	kv.db = make(map[string]string)
+	kv.chMap = make(map[int]chan Op)
+	kv.cid2Seq = make(map[int64]int)
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
-
+	kv.killCh = make(chan bool,1)
 	// You may need initialization code here.
-
+	go func(){
+		for !kv.killed(){
+			select{
+			case <-kv.killCh:
+				return
+			case applyMsg:=<- kv.applyCh:
+				op := applyMsg.Command.(Op)
+				kv.mu.Lock()
+				maxSeq,found := kv.cid2Seq[op.Cid]
+				if !found || op.SeqNum>maxSeq{
+					switch op.OpType{
+					case "Put":
+						kv.db[op.Key] = op.Value
+					case "Append":
+						kv.db[op.Key] += op.Value
+					}
+					kv.cid2Seq[op.Cid] = op.SeqNum
+				}
+				kv.mu.Unlock()
+				notifyCh := kv.putIfAbsent(applyMsg.CommandIndex)
+				send(notifyCh,op)
+			}
+		}
+	}()
 	return kv
 }

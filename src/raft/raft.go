@@ -229,7 +229,7 @@ func RandomElectionTime() time.Duration {
 
 //return 120ms
 func StableHeartBeatTime() time.Duration {
-	return time.Duration(time.Millisecond * 100)
+	return time.Duration(time.Millisecond * 20)
 }
 
 // return currentTerm and whether this server
