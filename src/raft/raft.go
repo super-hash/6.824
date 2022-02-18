@@ -205,6 +205,8 @@ func (rf *Raft) CallInstallSnapshot(peerId int) {
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
 	//加锁会产生死锁
+	// rf.mu.Lock()
+	// defer rf.mu.Unlock()
 	if index <= rf.log.LastIncludedIndex {
 		return
 	}
@@ -213,9 +215,9 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	rf.log.LastIncludedIndex = index
 	rf.log.LastIncludedTerm = rf.log.index(index).Term
 	rf.snapshot = snapshot
-	rf.SaveStateAndSnapshot()
 	rf.lastApplied = Max(rf.lastApplied, rf.log.LastIncludedIndex)
 	rf.commitIndex = Max(rf.commitIndex, rf.log.LastIncludedIndex)
+	rf.SaveStateAndSnapshot()
 }
 func (rf *Raft) SaveStateAndSnapshot() {
 	w := new(bytes.Buffer)
@@ -231,13 +233,13 @@ func (rf *Raft) SaveStateAndSnapshot() {
 //return 300 --450ms
 func RandomElectionTime() time.Duration {
 	rand.Seed(time.Now().UnixNano())
-	num := time.Duration(rand.Intn(251) + 150)
+	num := time.Duration(rand.Intn(251) + 350)
 	return time.Duration(time.Millisecond * num)
 }
 
 //return 20ms
 func StableHeartBeatTime() time.Duration {
-	return time.Duration(time.Millisecond * 20)
+	return time.Duration(time.Millisecond * 100)
 }
 
 // return currentTerm and whether this server
