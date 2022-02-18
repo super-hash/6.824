@@ -1,6 +1,7 @@
 package kvraft
 
 import (
+	"bytes"
 	"log"
 	"strconv"
 	"sync"
@@ -93,6 +94,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		reply.WrongLeader = false
 	}
 }
+
 //取到Op或超时返回
 func beNotified(ch chan Op) Op {
 	select {
@@ -146,6 +148,28 @@ func send(notifyCh chan Op, op Op) {
 	}
 	notifyCh <- op
 }
+func (kv *KVServer) readSnapShot(snapshot []byte) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	if snapshot == nil || len(snapshot) < 1 {
+		return
+	}
+	r := bytes.NewBuffer(snapshot)
+	d := labgob.NewDecoder(r)
+	var db map[string]string
+	var cid2Seq map[int64]int
+	if d.Decode(&db) != nil || d.Decode(&cid2Seq) != nil {
+		panic("readSnapShot ERROR for server ")
+	} else {
+		kv.db, kv.cid2Seq = db, cid2Seq
+	}
+}
+
+func (kv *KVServer) needSnapShot() bool {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	return kv.maxraftstate != -1 && kv.Persister.RaftStateSize() > kv.maxraftstate
+}
 
 //
 // servers[] contains the ports of the set of
@@ -171,12 +195,12 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv := new(KVServer)
 	kv.me = me
 	kv.maxraftstate = maxraftstate
-
+	kv.Persister = persister
 	// You may need initialization code here.
 	kv.db = make(map[string]string)
 	kv.chMap = make(map[int]chan Op)
 	kv.cid2Seq = make(map[int64]int)
-
+	kv.readSnapShot(kv.Persister.ReadSnapshot())
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 	kv.killCh = make(chan bool, 1)
@@ -188,22 +212,49 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 			case <-kv.killCh:
 				return
 			case applyMsg := <-kv.applyCh:
-				op := applyMsg.Command.(Op)
-				kv.mu.Lock()
-				maxSeq, found := kv.cid2Seq[op.Cid]
-				if !found || op.SeqNum > maxSeq {
-					switch op.OpType {
-					case "Put":
-						kv.db[op.Key] = op.Value
-					case "Append":
-						kv.db[op.Key] += op.Value
+				if applyMsg.CommandValid {
+					op := applyMsg.Command.(Op)
+					kv.mu.Lock()
+					maxSeq, found := kv.cid2Seq[op.Cid]
+					if !found || op.SeqNum > maxSeq {
+						switch op.OpType {
+						case "Put":
+							kv.db[op.Key] = op.Value
+						case "Append":
+							kv.db[op.Key] += op.Value
+						}
+						kv.cid2Seq[op.Cid] = op.SeqNum //实现幂等性，保存Client处理的最大的任务序号（SeqNum
 					}
-					kv.cid2Seq[op.Cid] = op.SeqNum//实现幂等性，保存Client处理的最大的任务序号（SeqNum
+					kv.mu.Unlock()
+					//一旦底层的Raft commit一个，就立马执行一个。
+					if kv.needSnapShot(){
+						w := new(bytes.Buffer)
+						e := labgob.NewEncoder(w)
+						e.Encode(kv.db)
+						e.Encode(kv.cid2Seq)
+						kv.rf.Snapshot(applyMsg.CommandIndex, w.Bytes())
+					}
+					notifyCh := kv.putIfAbsent(applyMsg.CommandIndex)
+					send(notifyCh, op)
 				}
-				kv.mu.Unlock()
-				//一旦底层的Raft commit一个，就立马执行一个。
-				notifyCh := kv.putIfAbsent(applyMsg.CommandIndex)
-				send(notifyCh, op)
+				index := 0
+				if applyMsg.SnapshotValid && len(applyMsg.Snapshot) > 0 {
+					if kv.rf.CondInstallSnapshot(applyMsg.SnapshotTerm, applyMsg.SnapshotIndex, applyMsg.Snapshot) {
+						r := bytes.NewBuffer(applyMsg.Snapshot)
+						d := labgob.NewDecoder(r)
+						d.Decode(&kv.db)
+						d.Decode(&kv.cid2Seq)
+						index = applyMsg.SnapshotIndex
+					}
+				}
+				if index != 0 && kv.needSnapShot() {
+					w := new(bytes.Buffer)
+					e := labgob.NewEncoder(w)
+					e.Encode(kv.db)
+					e.Encode(kv.cid2Seq)
+					kv.rf.Snapshot(index, w.Bytes())
+				}
+
 			}
 		}
 	}()

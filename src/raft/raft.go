@@ -133,6 +133,14 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 // A service wants to switch to snapshot.  Only do so if Raft hasn't
 // have more recent info since it communicate the snapshot on applyCh.
 //
+/*
+快照是状态机中的概念，需要在状态机中加载快照，因此要通过applyCh将快照发送给状态机，
+但是发送后Raft并不立即保存快照，而是等待状态机调用CondInstallSnapshot()，
+如果从收到InstallSnapshot()后到收到CondInstallSnapshot()前，没有新的日志提交到状态机，
+则Raft返回True，Raft和状态机保存快照，否则Raft返回False，两者都不保存快照。
+
+链接：https://juejin.cn/post/7029311624964112414
+*/
 func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int, snapshot []byte) bool {
 
 	// Your code here (2D).
@@ -223,11 +231,11 @@ func (rf *Raft) SaveStateAndSnapshot() {
 //return 300 --450ms
 func RandomElectionTime() time.Duration {
 	rand.Seed(time.Now().UnixNano())
-	num := time.Duration(rand.Intn(251) + 300)
+	num := time.Duration(rand.Intn(251) + 150)
 	return time.Duration(time.Millisecond * num)
 }
 
-//return 120ms
+//return 20ms
 func StableHeartBeatTime() time.Duration {
 	return time.Duration(time.Millisecond * 20)
 }
