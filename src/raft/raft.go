@@ -112,6 +112,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		rf.stopToFollower(args.Term)
 		rf.persist()
 	}
+	rf.state = Follower
 	rf.LeaderId = args.LeaderId
 	rf.ResetElectionTimer()
 	if args.LastIncludedIndex <= rf.commitIndex {
@@ -317,6 +318,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.Term > rf.currentTerm {
 		rf.stopToFollower(args.Term)
 	}
+	rf.state = Follower
 	rf.LeaderId = args.LeaderId
 	reply.Term = rf.currentTerm
 
