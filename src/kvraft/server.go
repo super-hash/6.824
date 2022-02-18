@@ -41,15 +41,17 @@ type KVServer struct {
 
 	maxraftstate int // snapshot if log grows this big
 	// timeout      time.Duration
-	Persister    *raft.Persister
-	db           map[string]string
-	chMap        map[int]chan Op
-	cid2Seq map[int64]int
-    killCh  chan bool
+	Persister *raft.Persister
+	db        map[string]string
+	chMap     map[int]chan Op
+	cid2Seq   map[int64]int
+	killCh    chan bool
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+	//可以通过Raft的Start函数返回请求在log中的index，对于每个index创建一个channel来接收执行完成的消息，
+	//接收到了之后，知道是完成操作了，然后回复给client
 	originOp := Op{
 		OpType: "Get",
 		Key:    args.Key,
@@ -73,7 +75,13 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	originOp := Op{args.Op, args.Key, args.Value, args.Cid, args.SeqNum}
+	originOp := Op{
+		args.Op,
+		args.Key,
+		args.Value,
+		args.Cid,
+		args.SeqNum,
+	}
 	reply.WrongLeader = true
 	index, _, isLeader := kv.rf.Start(originOp)
 	if !isLeader {
@@ -85,6 +93,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		reply.WrongLeader = false
 	}
 }
+//取到Op或超时返回
 func beNotified(ch chan Op) Op {
 	select {
 	case notifyArg := <-ch:
@@ -93,6 +102,8 @@ func beNotified(ch chan Op) Op {
 		return Op{}
 	}
 }
+
+//对于每个index创建一个channel来接收执行完成的消息
 func (kv *KVServer) putIfAbsent(idx int) chan Op {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
@@ -126,13 +137,16 @@ func (kv *KVServer) killed() bool {
 	z := atomic.LoadInt32(&kv.dead)
 	return z == 1
 }
-func send(notifyCh chan Op,op Op) {
-    select{
-    case  <-notifyCh:
-    default:
-    }
-    notifyCh <- op
+func send(notifyCh chan Op, op Op) {
+	//select是执行选择操作的一个结构，它里面有一组case语句，它会执行其中无阻塞的那一个，如果都阻塞了，那就等待其中一个不阻塞，
+	//进而继续执行，它有一个default语句，该语句是永远不会阻塞的，我们可以借助它实现无阻塞的操作。
+	select {
+	case <-notifyCh:
+	default:
+	}
+	notifyCh <- op
 }
+
 //
 // servers[] contains the ports of the set of
 // servers that will cooperate via Raft to
@@ -165,29 +179,31 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
-	kv.killCh = make(chan bool,1)
+	kv.killCh = make(chan bool, 1)
 	// You may need initialization code here.
-	go func(){
-		for !kv.killed(){
-			select{
+	//单独开一个goroutine来监视apply channel，一旦底层的Raft commit一个，就立马执行一个。
+	go func() {
+		for !kv.killed() {
+			select {
 			case <-kv.killCh:
 				return
-			case applyMsg:=<- kv.applyCh:
+			case applyMsg := <-kv.applyCh:
 				op := applyMsg.Command.(Op)
 				kv.mu.Lock()
-				maxSeq,found := kv.cid2Seq[op.Cid]
-				if !found || op.SeqNum>maxSeq{
-					switch op.OpType{
+				maxSeq, found := kv.cid2Seq[op.Cid]
+				if !found || op.SeqNum > maxSeq {
+					switch op.OpType {
 					case "Put":
 						kv.db[op.Key] = op.Value
 					case "Append":
 						kv.db[op.Key] += op.Value
 					}
-					kv.cid2Seq[op.Cid] = op.SeqNum
+					kv.cid2Seq[op.Cid] = op.SeqNum//实现幂等性，保存Client处理的最大的任务序号（SeqNum
 				}
 				kv.mu.Unlock()
+				//一旦底层的Raft commit一个，就立马执行一个。
 				notifyCh := kv.putIfAbsent(applyMsg.CommandIndex)
-				send(notifyCh,op)
+				send(notifyCh, op)
 			}
 		}
 	}()
